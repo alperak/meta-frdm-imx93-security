@@ -53,7 +53,7 @@ index 8dee8b63ba4..624ff7b3931 100644
 +fit_cnt=0x20000
 +
 +/* Kernel command line */
-+secure_bootargs=setenv bootargs console=ttyLP0,115200 earlycon root=/dev/mmcblk0p2 rootwait rw
++secure_bootargs=setenv bootargs console=ttyLP0,115200 earlycon root=/dev/mmcblk0p2 rootwait ro
 +
 +secure_bootcmd=
 +    echo "Booting signed FIT image...";
