@@ -51,9 +51,9 @@ part u-boot-env --ondisk mmcblk0 --no-table --offset 7M --fixed-size 1M
 # outgrows its 64 MiB partition or if the requested offset is already occupied.
 part fit        --source rawcopy --sourceparams="file=fitImage" --ondisk mmcblk0 --offset 8M --fixed-size 64M
 
-# The root filesystem, mmcblk0p2. Nothing outside the image depends on where it
-# starts, so it follows the FIT partition rather than being pinned.
-part /          --source rootfs --ondisk mmcblk0 --fstype=ext4 --label root --align 8192
+# The root filesystem, mmcblk0p2. Instead of creating the filesystem from
+# the rootfs contents, copy the complete dm-verity image into the partition.
+part /          --source rawcopy --sourceparams="file=${IMGDEPLOYDIR}/${DM_VERITY_IMAGE}-${MACHINE}${IMAGE_NAME_SUFFIX}.${DM_VERITY_IMAGE_TYPE}.verity" --ondisk mmcblk0 --align 8192
 
 # A GPT partition table. It gives every partition a name and a stable GUID,
 # neither of which MBR supports.
