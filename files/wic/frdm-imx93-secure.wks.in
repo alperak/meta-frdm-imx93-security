@@ -3,16 +3,20 @@
 # Stores the signed FIT image in its own raw partition instead of a VFAT /boot
 # filesystem.
 #
-# mmcblk0                                p1                   p2
-#                                        |                    |
-#                                        v                    v
-# - -------------------- ------- ------------------- ---------------------
-# | |      imx-boot      |  env  |      fitImage     |        rootfs       |
-# - -------------------- ------- ------------------- ---------------------
-# ^ ^                    ^       ^                   ^
-# | |                    |       |                   |
-# 0 32KiB                7MiB    8MiB                72MiB
+# mmcblk0                                p1                   p2              p3
+#                                        |                    |               |
+#                                        v                    v               v
+# - -------------------- ------- ------------------- --------------- ---------------
+# | |      imx-boot      |  env  |      fitImage     |    rootfs     |     data      |
+# - -------------------- ------- ------------------- --------------- ---------------
+# ^ ^                    ^       ^                   ^               ^
+# | |                    |       |                   |               |
+# 0 32KiB                7MiB    8MiB                72MiB           1096MiB
 #   ${IMX_BOOT_SEEK}, the offset the Boot ROM reads the bootable image from
+#
+# The fixed boundaries allow partition-aware updates to replace the system
+# partitions without moving p3. A full-disk .wic reflash is not a
+# preservation mechanism for the encrypted data partition.
 #
 # The bottom row shows start offsets, not partition sizes. imx-boot starts
 # at 32 KiB and is currently about 2.2 MiB, so it fits well before the
@@ -53,7 +57,23 @@ part fit        --source rawcopy --sourceparams="file=fitImage" --ondisk mmcblk0
 
 # The root filesystem, mmcblk0p2. Instead of creating the filesystem from
 # the rootfs contents, copy the complete dm-verity image into the partition.
-part /          --source rawcopy --sourceparams="file=${IMGDEPLOYDIR}/${DM_VERITY_IMAGE}-${MACHINE}${IMAGE_NAME_SUFFIX}.${DM_VERITY_IMAGE_TYPE}.verity" --ondisk mmcblk0 --align 8192
+#
+# Give the rootfs a fixed partition. The complete dm-verity image must fit
+# within 1024 MiB, otherwise Wic fails the image build. Fixing both its start
+# and size also fixes the boundary of the following data partition.
+part /          --source rawcopy --sourceparams="file=${IMGDEPLOYDIR}/${DM_VERITY_IMAGE}-${MACHINE}${IMAGE_NAME_SUFFIX}.${DM_VERITY_IMAGE_TYPE}.verity" --ondisk mmcblk0 --offset 72M --fixed-size 1024M
+
+# The encrypted data partition, mmcblk0p3.
+#
+# Leave the partition unformatted in the generated image. The device creates
+# the LUKS2 container and ext4 filesystem during first boot.
+#
+# Wic defaults --fstype to vfat. Using none prevents it from creating a
+# filesystem in this partition.
+#
+# --part-name writes the GPT partition name "data", so the initramfs can find
+# the partition through /dev/disk/by-partlabel/data before LUKS or ext4 exists.
+part            --ondisk mmcblk0 --part-name data --fstype=none --offset 1096M --fixed-size 2048M
 
 # A GPT partition table. It gives every partition a name and a stable GUID,
 # neither of which MBR supports.

@@ -1,0 +1,149 @@
+#!/bin/sh
+#
+# Opens the encrypted data partition, provisioning it on first boot.
+#
+# The device-specific unlock credential is derived through OP-TEE rather than
+# loaded from a key file or sealed blob. The LUKS header and keyslots remain
+# persistent state on the data partition.
+#
+# Only the mapping is opened here. /dev/mapper/<name> survives switch_root, and
+# the real root filesystem mounts /data later.
+
+DMCRYPT_LABEL=data
+DMCRYPT_NAME=data
+
+# Public domain-separation input to the derivation.
+#
+# Use a different context for every encrypted volume or purpose. Treat an
+# existing context as permanent unless the corresponding LUKS keyslot is
+# migrated first.
+#
+# Do not make this selectable through the kernel command line. Boot arguments
+# on this system come from the writable U-Boot environment rather than the
+# signed FIT, and changing this value changes the derived credential.
+DMCRYPT_CONTEXT=frdm-imx93-data-v1
+
+DMCRYPT_DEV="/dev/disk/by-partlabel/${DMCRYPT_LABEL}"
+DMCRYPT_MAPPER="/dev/mapper/${DMCRYPT_NAME}"
+
+# Pin the bulk-encryption parameters instead of inheriting cryptsetup defaults.
+# AES-XTS uses two AES-256 keys, giving a 512-bit LUKS volume key.
+DMCRYPT_CIPHER="--cipher aes-xts-plain64 --key-size 512"
+
+# This cryptsetup build otherwise uses an Argon2 keyslot KDF with benchmarked
+# resource use. The credential here comes from a machine-derived 32-byte
+# secret rather than a human password, so use PBKDF2 at a fixed low cost.
+DMCRYPT_PBKDF="--pbkdf pbkdf2 --pbkdf-force-iterations 1000"
+
+# frdm-luks-pass emits exactly 64 ASCII hex bytes. Read them as key-file data
+# from stdin and cap cryptsetup's read at that length.
+DMCRYPT_KEYFILE="--key-file=- --keyfile-size=64"
+
+dmcrypt_enabled() {
+    return 0
+}
+
+# 01-udev normally discovers both devices before this module runs. udevadm
+# settle only waits for events already in flight, so keep a bounded wait around
+# dependencies that may not have appeared yet.
+dmcrypt_wait_for() {
+    _path="$1"
+    _what="$2"
+    _c=0
+    _delay=${bootparam_rootdelay:-1}
+    _timeout=${bootparam_roottimeout:-5}
+
+    while [ ! -e "$_path" ]; do
+        if [ $((_c * _delay)) -gt "$_timeout" ]; then
+            return 1
+        fi
+
+        debug "dmcrypt: waiting for ${_what} (${_path})"
+        sleep "$_delay"
+        _c=$((_c + 1))
+    done
+
+    return 0
+}
+
+# Derive on demand rather than retaining the credential in a shell variable.
+dmcrypt_passphrase() {
+    frdm-luks-pass --context "${DMCRYPT_CONTEXT}"
+}
+
+dmcrypt_format() {
+    msg "dmcrypt: provisioning ${DMCRYPT_DEV}"
+
+    # There is no operator in the initramfs, so suppress luksFormat's
+    # destructive-operation confirmation.
+    dmcrypt_passphrase | cryptsetup luksFormat \
+        --type luks2 \
+        --batch-mode \
+        ${DMCRYPT_CIPHER} \
+        ${DMCRYPT_PBKDF} \
+        ${DMCRYPT_KEYFILE} \
+        "${DMCRYPT_DEV}"
+}
+
+dmcrypt_open() {
+    dmcrypt_passphrase | cryptsetup open \
+        --type luks2 \
+        ${DMCRYPT_KEYFILE} \
+        "${DMCRYPT_DEV}" "${DMCRYPT_NAME}"
+}
+
+dmcrypt_run() {
+    _new_volume=0
+
+    if ! dmcrypt_wait_for "${DMCRYPT_DEV}" "data partition"; then
+        fatal "dmcrypt: ${DMCRYPT_DEV} never appeared"
+    fi
+
+    if ! dmcrypt_wait_for /dev/tee0 "TEE device"; then
+        fatal "dmcrypt: /dev/tee0 never appeared, cannot derive the passphrase"
+    fi
+
+    # Any recognizable LUKS header blocks automatic provisioning. A failure of
+    # isLuks is treated as "unprovisioned" only by the policy used in this part.
+    #
+    # This is not corruption detection. A damaged LUKS header can make isLuks
+    # fail as well, so production provisioning needs independent state that can
+    # distinguish virgin storage from damaged metadata.
+    if ! cryptsetup isLuks "${DMCRYPT_DEV}"; then
+        dmcrypt_format || fatal "dmcrypt: luksFormat failed"
+        _new_volume=1
+    fi
+
+    if ! dmcrypt_open; then
+        # Once a LUKS header has been recognized, an unlock failure must never
+        # become permission to reformat the partition.
+        fatal "dmcrypt: cannot open ${DMCRYPT_DEV} with the derived passphrase"
+    fi
+
+    # The mapping now has the volume key it needs. No further derivations are
+    # required, so close that interface before any remaining provisioning work.
+    if ! frdm-luks-pass --lock; then
+        cryptsetup close "${DMCRYPT_NAME}" >/dev/null 2>&1 || true
+        fatal "dmcrypt: could not lock the TA"
+    fi
+
+    if [ "${_new_volume}" -eq 1 ]; then
+        msg "dmcrypt: creating a filesystem on ${DMCRYPT_MAPPER}"
+
+        if ! mkfs.ext4 -q -F -L "${DMCRYPT_LABEL}" "${DMCRYPT_MAPPER}"; then
+            cryptsetup close "${DMCRYPT_NAME}" >/dev/null 2>&1 || true
+            fatal "dmcrypt: mkfs.ext4 failed"
+        fi
+    else
+        # An existing volume must already contain ext4. Treat anything else as
+        # possible corruption rather than permission to create a new filesystem.
+        _fstype="$(blkid -s TYPE -o value "${DMCRYPT_MAPPER}" 2>/dev/null || true)"
+
+        if [ "${_fstype}" != "ext4" ]; then
+            cryptsetup close "${DMCRYPT_NAME}" >/dev/null 2>&1 || true
+            fatal "dmcrypt: expected ext4 on ${DMCRYPT_MAPPER}, found '${_fstype:-none}'"
+        fi
+    fi
+
+    info "dmcrypt: ${DMCRYPT_MAPPER} is open"
+}

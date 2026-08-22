@@ -1,0 +1,11 @@
+# fstab for the secure FRDM i.MX93 image.
+
+/dev/root            /                    auto       defaults              1  1
+proc                 /proc                proc       defaults              0  0
+devpts               /dev/pts             devpts     mode=0620,ptmxmode=0666,gid=5      0  0
+tmpfs                /run                 tmpfs      mode=0755,nodev,nosuid,strictatime 0  0
+tmpfs                /var/volatile        tmpfs      defaults              0  0
+
+# The initramfs has already opened the LUKS2 volume as /dev/mapper/data.
+# A non-zero passno asks systemd to check the ext4 filesystem before mounting it.
+/dev/mapper/data     /data                ext4       defaults,noatime,nodev,nosuid      0  2
