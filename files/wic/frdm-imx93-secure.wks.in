@@ -1,0 +1,60 @@
+# short-description: eMMC layout for secure boot with a raw signed FIT
+# long-description:
+# Stores the signed FIT image in its own raw partition instead of a VFAT /boot
+# filesystem.
+#
+# mmcblk0                                p1                   p2
+#                                        |                    |
+#                                        v                    v
+# - -------------------- ------- ------------------- ---------------------
+# | |      imx-boot      |  env  |      fitImage     |        rootfs       |
+# - -------------------- ------- ------------------- ---------------------
+# ^ ^                    ^       ^                   ^
+# | |                    |       |                   |
+# 0 32KiB                7MiB    8MiB                72MiB
+#   ${IMX_BOOT_SEEK}, the offset the Boot ROM reads the bootable image from
+#
+# The bottom row shows start offsets, not partition sizes. imx-boot starts
+# at 32 KiB and is currently about 2.2 MiB, so it fits well before the
+# reserved environment area at 7 MiB.
+#
+# Two addresses defined outside this file must match this layout. U-Boot reads
+# its environment at CONFIG_ENV_OFFSET = 0x700000 (7 MiB), while secure_bootcmd
+# reads the FIT from fit_blk = 0x4000 MMC blocks (8 MiB). Neither address is
+# discovered from the partition layout at run time.
+#
+# The offsets are therefore explicit. Alignment only rounds the current
+# position up to the requested boundary, so a larger image before an aligned
+# partition can silently move that partition. An explicit --offset instead
+# makes wic fail if the requested location is already occupied.
+#
+# U-Boot writes only CONFIG_ENV_SIZE = 0x4000 bytes (16 KiB) into the 1 MiB
+# reserved for the environment. If the environment layout or size changes,
+# the reserved area must be reviewed together with the FIT offset.
+#
+# These values must stay synchronized with the board environment
+# (the u-boot-imx patch in this layer):
+#   fit_blk = 0x4000  MMC blocks =  8 MiB  (offset)
+#   fit_cnt = 0x20000 MMC blocks = 64 MiB  (size)
+
+# The bootable image, at the offset expected by the Boot ROM. --no-table keeps
+# it out of the partition table.
+part imx-boot   --source rawcopy --sourceparams="file=imx-boot.tagged" --ondisk mmcblk0 --no-table --align ${IMX_BOOT_SEEK}
+
+# Reserves the area saveenv writes to. It holds no data and gets no partition
+# table entry. If imx-boot ever grew beyond 7 MiB, wic would fail here instead
+# of producing an image whose bootloader overlaps the environment.
+part u-boot-env --ondisk mmcblk0 --no-table --offset 7M --fixed-size 1M
+
+# The raw FIT partition, which Linux sees as mmcblk0p1. Its offset and size are
+# kept in sync with fit_blk and fit_cnt. Wic fails the build if the FIT
+# outgrows its 64 MiB partition or if the requested offset is already occupied.
+part fit        --source rawcopy --sourceparams="file=fitImage" --ondisk mmcblk0 --offset 8M --fixed-size 64M
+
+# The root filesystem, mmcblk0p2. Nothing outside the image depends on where it
+# starts, so it follows the FIT partition rather than being pinned.
+part /          --source rootfs --ondisk mmcblk0 --fstype=ext4 --label root --align 8192
+
+# A GPT partition table. It gives every partition a name and a stable GUID,
+# neither of which MBR supports.
+bootloader --ptable gpt
