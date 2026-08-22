@@ -1,0 +1,68 @@
+From bba858b679b1a25025819e4b333124a8c74a0dd9 Mon Sep 17 00:00:00 2001
+From: Alper Ak <alperyasinak1@gmail.com>
+Date: Thu, 6 Aug 2026 21:04:09 +0300
+Subject: [PATCH] imx93_frdm: add secure_bootcmd for FIT boot
+
+Add secure_bootcmd, which reads the FIT image from a dedicated raw partition
+and lets bootm verify it before transferring control to Linux.
+CONFIG_BOOTCOMMAND is updated to invoke secure_bootcmd directly.
+
+Upstream-Status: Inappropriate [product specific boot configuration]
+
+Signed-off-by: Alper Ak <alperyasinak1@gmail.com>
+---
+ board/nxp/imx93_frdm/imx93_frdm.env | 42 +++++++++++++++++++++++++++++
+ 1 file changed, 42 insertions(+)
+
+diff --git a/board/nxp/imx93_frdm/imx93_frdm.env b/board/nxp/imx93_frdm/imx93_frdm.env
+index 8dee8b63ba4..624ff7b3931 100644
+--- a/board/nxp/imx93_frdm/imx93_frdm.env
++++ b/board/nxp/imx93_frdm/imx93_frdm.env
+@@ -107,3 +107,45 @@ bsp_bootcmd=
+ 		fi;
+ 	fi;
+ scriptaddr=0x83500000
++
++/*
++ * Verified FIT boot.
++ *
++ * Reads the signed FIT image from a dedicated raw partition and lets bootm
++ * verify its configuration signature before transferring control to Linux.
++ * CONFIG_BOOTCOMMAND points to "run secure_bootcmd", bypassing the BSP's
++ * default boot flow.
++ *
++ * fit_blk and fit_cnt must match the FIT partition defined in
++ * frdm-imx93-secure.wks.in.
++ *
++ *      fit_blk = 0x4000  -> 8 MiB offset (512 byte MMC blocks)
++ *      fit_cnt = 0x20000 -> 64 MiB partition size
++ *
++ * fit_addr is only a temporary staging address for the FIT image.
++ * bootm relocates the kernel to the load address stored inside the FIT
++ * (0x80400000), so fit_addr does not need to match the kernel load address.
++ */
++
++
++/* Temporary RAM location for the FIT image */
++fit_addr=0x83000000
++
++/* FIT partition offset (8 MiB) */
++fit_blk=0x4000
++
++/* FIT partition size (64 MiB) */
++fit_cnt=0x20000
++
++/* Kernel command line */
++secure_bootargs=setenv bootargs console=ttyLP0,115200 earlycon root=/dev/mmcblk0p2 rootwait rw
++
++secure_bootcmd=
++    echo "Booting signed FIT image...";
++    run secure_bootargs;
++    if mmc dev 0; then
++        if mmc read ${fit_addr} ${fit_blk} ${fit_cnt}; then
++            bootm ${fit_addr};
++        fi;
++    fi;
++    echo "ERROR: FIT boot failed (verification or image loading)"
+-- 
+2.43.0
